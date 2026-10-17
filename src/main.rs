@@ -47,6 +47,13 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+
+    /// Inicia o servidor web com a lista de publicacoes
+    Serve {
+        /// Endereco de escuta
+        #[arg(long, default_value = "127.0.0.1:3000")]
+        addr: std::net::SocketAddr,
+    },
 }
 
 #[tokio::main]
@@ -92,6 +99,15 @@ async fn main() -> anyhow::Result<()> {
 
         Command::Territories { name } => {
             commands::territories::run(name.as_deref()).await?;
+            Ok(())
+        }
+
+        Command::Serve { addr } => {
+            let config = config::Config::load(&cli.config)?;
+            let pool = db::init(&config.database_url)
+                .await
+                .context("abrindo o banco")?;
+            commands::serve::run(&config, pool, addr).await?;
             Ok(())
         }
     }

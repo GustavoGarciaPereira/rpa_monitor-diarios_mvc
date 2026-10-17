@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monitor de Diários</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased">
+
+  <header class="bg-slate-900 text-white">
+    <div class="max-w-5xl mx-auto px-4 py-10">
+      <h1 class="text-3xl font-bold tracking-tight">Monitor de Diários</h1>
+      <p class="mt-2 text-sm text-slate-300">Publicações de diários oficiais monitoradas em tempo real</p>
+
+      <div class="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div class="rounded-lg bg-slate-800 p-5">
+          <div class="text-3xl font-bold">{{ stats.total_gazettes }}</div>
+          <div class="mt-1 text-xs uppercase tracking-wide text-slate-400">Publicações</div>
+        </div>
+        <div class="rounded-lg bg-slate-800 p-5">
+          <div class="text-3xl font-bold">{{ stats.total_alerts }}</div>
+          <div class="mt-1 text-xs uppercase tracking-wide text-slate-400">Alertas</div>
+        </div>
+        <div class="rounded-lg bg-slate-800 p-5">
+          <div class="text-3xl font-bold">{{ stats.total_cities }}</div>
+          <div class="mt-1 text-xs uppercase tracking-wide text-slate-400">Cidades</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-5xl px-4 py-8">
+    <form method="GET" action="/" class="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:flex-row sm:items-center">
+      <input type="text" name="city" value="{{ filters.city }}" placeholder="Cidade (ex: Curitiba)"
+             class="w-full rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none sm:w-1/3">
+      <input type="text" name="keyword" value="{{ filters.keyword }}" placeholder="Palavra-chave (ex: licitacao)"
+             class="w-full rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none sm:w-1/3">
+      <select name="days"
+              class="w-full rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none sm:w-auto">
+        <option value="7" {% if filters.days == 7 %}selected{% endif %}>Últimos 7 dias</option>
+        <option value="30" {% if filters.days == 30 %}selected{% endif %}>Últimos 30 dias</option>
+        <option value="90" {% if filters.days == 90 %}selected{% endif %}>Últimos 90 dias</option>
+      </select>
+      <button type="submit"
+              class="rounded bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700">Filtrar</button>
+      <a href="/" class="px-2 py-2 text-sm text-slate-500 hover:text-slate-800">Limpar</a>
+    </form>
+
+    <p class="mt-4 text-sm text-slate-500">{{ gazettes|length }} publicação(ões) encontrada(s)</p>
+
+    {% if gazettes|length == 0 %}
+      <div class="mt-6 rounded-lg border border-slate-200 bg-white p-10 text-center">
+        <p class="text-slate-600">Nenhuma publicação encontrada com esses filtros.</p>
+        <a href="/" class="mt-4 inline-block rounded bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700">Limpar filtros</a>
+      </div>
+    {% else %}
+      <div class="mt-4 space-y-3">
+        {% for gazette in gazettes %}
+          <article class="rounded-lg border border-slate-200 bg-white p-5">
+            <div class="flex flex-wrap items-center gap-2 text-sm">
+              <span class="font-medium">{{ gazette.date }}</span>
+              <span class="text-slate-500">{{ gazette.city }}</span>
+              {% for keyword in gazette.keywords %}
+                <span class="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800">{{ keyword }}</span>
+              {% endfor %}
+            </div>
+            <p class="mt-2 break-words text-sm leading-relaxed text-slate-700">{{ gazette.excerpt }}</p>
+            <a href="{{ gazette.url }}" target="_blank" rel="noopener"
+               class="mt-3 inline-block text-sm text-blue-600 hover:underline">Abrir PDF →</a>
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </main>
+
+  <footer class="mx-auto max-w-5xl px-4 py-8 text-center text-xs text-slate-500">
+    Construído em Rust · RSS {{ rss_mb }} MB · Atualizado em {{ last_update }}
+  </footer>
+
+</body>
+</html>

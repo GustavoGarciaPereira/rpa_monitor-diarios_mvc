@@ -270,7 +270,7 @@ mod tests {
         let parsed: GazetteSearchResponse = serde_json::from_str(FIXTURE).unwrap();
         let raw = parsed.gazettes.into_iter().nth(1).unwrap().into_raw("licitacao");
         assert_eq!(raw.edition, None);
-        assert_eq!(raw.is_extra_edition, false);
+        assert!(!raw.is_extra_edition);
         assert_eq!(raw.external_id, raw.url);
         assert_eq!(raw.published_at.to_string(), "2026-10-15");
     }

@@ -21,6 +21,12 @@ pub enum AppError {
     #[error("resposta inesperada da fonte: {0}")]
     Parse(String),
 
+    #[error("falha ao renderizar template: {0}")]
+    Template(String),
+
+    #[error("falha de I/O: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("fonte indisponivel apos {attempts} tentativas: {reason}")]
     Unavailable { attempts: u32, reason: String },
 }
