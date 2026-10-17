@@ -102,6 +102,22 @@ Verificado:
 | Porto Alegre | 4314902 | 10000 (corte) | 2025-10-31 |
 | **Sao Paulo** | **3550308** | **20** | **2025-03-24** |
 | Fortaleza | 2304400 | 0 | — |
+| Santa Maria (RS) | 4316907 | **0** | — |
+| Sao Sepe (RS) | 4319604 | **0** | — |
+| Caxias do Sul (RS) | 4305108 | 5861 | 2025-12-15 |
+| Pelotas (RS) | 4314407 | 0 | — |
+
+### Rio Grande do Sul: fonte estagnada (2026-10-17)
+
+A cobertura do RS e o pior caso da fonte. Porto Alegre satura no corte de
+10000 resultados com a ultima gazette em 2025-10-31; Caxias do Sul parou em
+2025-12-15; Pelotas, Santa Cruz do Sul, Novo Hamburgo, Canoas, Santa Maria e
+Sao Sepe retornam zero.
+
+Atencao: `level` **nao** indica disponibilidade de dados. Santa Maria tem
+`level: 1` e zero publicacoes. Nao use `level` para decidir se vale monitorar
+uma cidade — consulte `/gazettes?territory_ids=<id>&size=1&sort_by=descending_date`
+e olhe `total_gazettes` e a data da ultima publicacao.
 
 Consequencia de projeto: **Sao Paulo nao e coberto**. O exemplo do plano
 original (`territory_ids=3550308`) retorna zero — nao por bug no cliente.

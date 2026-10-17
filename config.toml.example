@@ -33,7 +33,16 @@ keywords = [
 # CUIDADO: cobertura e desigual. Sao Paulo (3550308) tem so 20 gazettes,
 # a ultima de 2025-03-24. Descubra outras cidades com:
 #   cargo run -- territories --name "campinas"
-territories = ["4106902", "3304557", "2927408", "2611606"]
+#
+# Rio Grande do Sul (verificado em 2026-10-17): a fonte esta estagnada.
+#   4316907 Santa Maria  | 0 publicacoes (nivel 1, mas sem dados)
+#   4319604 Sao Sepe     | 0 publicacoes
+#   4305108 Caxias do Sul| 5861, ultima 2025-12-15
+#   4314902 Porto Alegre | 10000 (corte), ultima 2025-10-31
+#   4314407 Pelotas, 4316808 Santa Cruz do Sul, 4313409 Novo Hamburgo,
+#   4304606 Canoas       | 0 publicacoes
+# Os IDs ficam na lista para o caso de a fonte voltar a raspar o estado.
+territories = ["4106902", "3304557", "2927408", "2611606", "4316907", "4319604"]
 
 database_url = "sqlite:monitor.db"
 

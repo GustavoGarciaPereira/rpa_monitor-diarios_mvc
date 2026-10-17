@@ -9,7 +9,7 @@ primary_region = 'gru'
 [build]
 [env]
   MONITOR_KEYWORDS = '+pregao +eletronico,+dispensa +licitacao'
-  MONITOR_TERRITORIES = '4106902,3304557,2927408,2611606'
+  MONITOR_TERRITORIES = '4106902,3304557,2927408,2611606,4316907,4319604'
   RUST_LOG = 'info,monitor_diarios=info'
 
 [[mounts]]
