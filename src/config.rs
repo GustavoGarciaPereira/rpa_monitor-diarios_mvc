@@ -65,8 +65,12 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Carrega de um arquivo TOML (ou usa os defaults, se o arquivo nao existir),
-    /// aplica overrides de ambiente e valida.
+    /// Carrega de um arquivo TOML (ou usa os defaults, se o arquivo nao existir)
+    /// e aplica overrides de ambiente.
+    ///
+    /// Nao valida aqui de proposito: `serve` precisa subir mesmo sem keywords
+    /// (no container nao existe `config.toml`). Cada comando chama a validacao
+    /// que lhe cabe.
     pub fn load(path: &Path) -> Result<Self> {
         let mut config = if path.exists() {
             let raw = std::fs::read_to_string(path)
@@ -78,8 +82,44 @@ impl Config {
         };
 
         config.apply_env();
-        config.validate()?;
         Ok(config)
+    }
+
+    /// Regras para coletar: sem keyword nao ha o que buscar.
+    pub fn validate_for_scan(&self) -> Result<()> {
+        if self.keywords.is_empty() {
+            return Err(AppError::Config(
+                "nenhuma keyword configurada: preencha `keywords` no config.toml \
+                 ou a env MONITOR_KEYWORDS"
+                    .into(),
+            ));
+        }
+        if self.keywords.iter().any(|k| k.trim().is_empty()) {
+            return Err(AppError::Config(
+                "keyword vazia na configuracao; remova a entrada".into(),
+            ));
+        }
+        self.validate_common()
+    }
+
+    /// Servir depende so do banco: a lista de keywords nao e usada pela pagina.
+    pub fn validate_for_serve(&self) -> Result<()> {
+        self.validate_common()
+    }
+
+    fn validate_common(&self) -> Result<()> {
+        for territory in &self.territories {
+            let t = territory.trim();
+            if t.len() != 7 || !t.chars().all(|c| c.is_ascii_digit()) {
+                return Err(AppError::Config(format!(
+                    "territory_id invalido: {territory:?} (esperado 7 digitos IBGE, ex. 4106902)"
+                )));
+            }
+        }
+        if self.database_url.trim().is_empty() {
+            return Err(AppError::Config("database_url vazia".into()));
+        }
+        Ok(())
     }
 
     /// Parser puro, sem tocar em ambiente — facilita teste.
@@ -109,33 +149,6 @@ impl Config {
         if let Ok(v) = std::env::var("MONITOR_TERRITORIES") {
             self.territories = split_list(&v);
         }
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.keywords.is_empty() {
-            return Err(AppError::Config(
-                "nenhuma keyword configurada: preencha `keywords` no config.toml \
-                 ou a env MONITOR_KEYWORDS"
-                    .into(),
-            ));
-        }
-        if self.keywords.iter().any(|k| k.trim().is_empty()) {
-            return Err(AppError::Config(
-                "keyword vazia na configuracao; remova a entrada".into(),
-            ));
-        }
-        for territory in &self.territories {
-            let t = territory.trim();
-            if t.len() != 7 || !t.chars().all(|c| c.is_ascii_digit()) {
-                return Err(AppError::Config(format!(
-                    "territory_id invalido: {territory:?} (esperado 7 digitos IBGE, ex. 4106902)"
-                )));
-            }
-        }
-        if self.database_url.trim().is_empty() {
-            return Err(AppError::Config("database_url vazia".into()));
-        }
-        Ok(())
     }
 }
 
@@ -175,9 +188,11 @@ database_url = "sqlite:teste.db"
     }
 
     #[test]
-    fn rejeita_keywords_vazias() {
+    fn sem_keywords_bloqueia_scan_mas_nao_serve() {
         let cfg = Config::from_toml(r#"keywords = []"#).unwrap();
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate_for_scan().is_err());
+        // O container nao carrega config.toml: `serve` tem que subir assim.
+        assert!(cfg.validate_for_serve().is_ok());
     }
 
     #[test]
@@ -189,13 +204,13 @@ territories = ["355030"]
 "#,
         )
         .unwrap();
-        let err = cfg.validate().unwrap_err().to_string();
+        let err = cfg.validate_for_scan().unwrap_err().to_string();
         assert!(err.contains("territory_id invalido"), "erro foi: {err}");
     }
 
     #[test]
     fn aceita_frase_como_keyword() {
         let cfg = Config::from_toml(r#"keywords = ["dispensa de licitacao"]"#).unwrap();
-        assert!(cfg.validate().is_ok());
+        assert!(cfg.validate_for_scan().is_ok());
     }
 }

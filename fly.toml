@@ -1,0 +1,37 @@
+# fly.toml app configuration file generated for monitor-diarios on 2026-10-17T17:02:16-03:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'monitor-diarios'
+primary_region = 'gru'
+
+[build]
+[env]
+  MONITOR_KEYWORDS = '+pregao +eletronico,+dispensa +licitacao'
+  MONITOR_TERRITORIES = '4106902,3304557,2927408,2611606'
+  RUST_LOG = 'info,monitor_diarios=info'
+
+[[mounts]]
+  source = 'monitor_data'
+  destination = '/app/data'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '2m0s'
+    method = 'GET'
+    path = '/health'
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256

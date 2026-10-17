@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Scan { since, until } => {
             let config = config::Config::load(&cli.config)?;
+            config.validate_for_scan()?;
 
             // `Local` (nao `Utc`): as datas dos diarios sao do fuso de Brasilia.
             // Com Utc, um scan as 21h de Brasilia cairia no dia seguinte.
@@ -104,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
 
         Command::Serve { addr } => {
             let config = config::Config::load(&cli.config)?;
+            config.validate_for_serve()?;
             let pool = db::init(&config.database_url)
                 .await
                 .context("abrindo o banco")?;

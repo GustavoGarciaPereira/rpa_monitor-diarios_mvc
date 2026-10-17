@@ -1,0 +1,11 @@
+target/
+*.db
+*.db-wal
+*.db-shm
+.env
+config.toml
+.cargo-home/
+.tools/
+.git/
+data/
+docs/

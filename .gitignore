@@ -7,3 +7,5 @@ config.toml
 .cargo-home/
 docs/projeto-roadmap.md
 .tools/
+.docker-tmp/
+data/
