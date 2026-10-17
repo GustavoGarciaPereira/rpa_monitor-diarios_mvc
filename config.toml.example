@@ -1,0 +1,46 @@
+# Copie para `config.toml` e ajuste.
+# Variaveis de ambiente sobrescrevem estes valores (veja .env.example).
+
+# Palavras-chave monitoradas.
+#
+# Cada keyword vira um `querystring` na API do Querido Diario, que usa a
+# sintaxe "simple query string" do OpenSearch. Verificado na API real:
+#
+#   pregao eletronico    -> 49 hits (termos sao OR por padrao)
+#   +pregao +eletronico  -> 21 hits (o `+` exige o termo = AND)
+#   "pregao eletronico"  ->  0 hits (aspas = frase EXATA; sem acento nao casa)
+#
+# Regras praticas:
+#   * use `+termo` para exigir cada termo;
+#   * NAO use acentos: o termo solto e insensivel a acento, entao
+#     `+pregao` casa com "pregão";
+#   * evite aspas. Elas desligam a dobra de acento e podem zerar o resultado
+#     em silencio (mesma armadilha do `keywords`).
+keywords = [
+  "+pregao +eletronico",
+  "+dispensa +licitacao",
+  "+contratacao +direta",
+]
+
+# Ids IBGE de 7 digitos. Lista vazia = busca nacional (alto volume).
+#
+# Cidades com cobertura ATIVA verificada em 2026-10-17:
+#   4106902 Curitiba (PR)       | ultima gazette 2026-10-15
+#   3304557 Rio de Janeiro (RJ) | ultima gazette 2026-10-15
+#   2927408 Salvador (BA)       | ultima gazette 2026-10-16
+#   2611606 Recife (PE)         | ultima gazette 2026-10-15
+#
+# CUIDADO: cobertura e desigual. Sao Paulo (3550308) tem so 20 gazettes,
+# a ultima de 2025-03-24. Descubra outras cidades com:
+#   cargo run -- territories --name "campinas"
+territories = ["4106902", "3304557", "2927408", "2611606"]
+
+database_url = "sqlite:monitor.db"
+
+# Itens por pagina (a API aceita ate 200).
+page_size = 200
+
+# Teto de itens por keyword, para nao varrer o pais inteiro por acidente.
+max_results_per_keyword = 500
+
+# Telegram: deixe fora daqui. Use as env TELEGRAM_TOKEN / TELEGRAM_CHAT_ID.
