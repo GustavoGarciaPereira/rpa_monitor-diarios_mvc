@@ -53,3 +53,10 @@ page_size = 200
 max_results_per_keyword = 500
 
 # Telegram: deixe fora daqui. Use as env TELEGRAM_TOKEN / TELEGRAM_CHAT_ID.
+
+# Prefeituras do RS que publicam no Diario Oficial dos Municipios (FAMURS/SIGPub).
+# Descubra o ID no select "Municipio (entidade)" em:
+#   https://www.diariomunicipal.com.br/famurs/pesquisar
+# 64462 = Prefeitura Municipal de Sao Sepe
+# Vazio = nao usa a fonte FAMURS.
+famurs_entities = ["64462"]

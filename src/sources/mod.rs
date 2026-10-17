@@ -4,8 +4,10 @@ use chrono::NaiveDate;
 use crate::error::Result;
 use crate::model::RawGazette;
 
+pub mod famurs;
 pub mod querido_diario;
 
+pub use famurs::FamursSource;
 pub use querido_diario::QueridoDiario;
 
 /// Contrato de uma fonte de diarios oficiais.

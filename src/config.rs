@@ -18,6 +18,10 @@ pub struct Config {
     #[serde(default)]
     pub territories: Vec<String>,
 
+    /// Entidades do portal da FAMURS (RS). Vazio = nao usa essa fonte.
+    #[serde(default)]
+    pub famurs_entities: Vec<String>,
+
     /// URL do SQLite, ex.: `sqlite:monitor.db`.
     #[serde(default = "default_database_url")]
     pub database_url: String,
@@ -55,6 +59,7 @@ impl Default for Config {
         Self {
             keywords: Vec::new(),
             territories: Vec::new(),
+            famurs_entities: Vec::new(),
             database_url: default_database_url(),
             telegram_token: None,
             telegram_chat_id: None,
@@ -98,6 +103,14 @@ impl Config {
             return Err(AppError::Config(
                 "keyword vazia na configuracao; remova a entrada".into(),
             ));
+        }
+        for entity in &self.famurs_entities {
+            let e = entity.trim();
+            if e.is_empty() || !e.chars().all(|c| c.is_ascii_digit()) {
+                return Err(AppError::Config(format!(
+                    "famurs_entities invalido: {entity:?} (esperado id numerico, ex. 64462)"
+                )));
+            }
         }
         self.validate_common()
     }
@@ -148,6 +161,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("MONITOR_TERRITORIES") {
             self.territories = split_list(&v);
+        }
+        if let Ok(v) = std::env::var("MONITOR_FAMURS_ENTITIES") {
+            self.famurs_entities = split_list(&v);
         }
     }
 }
