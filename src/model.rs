@@ -63,13 +63,17 @@ impl RawGazette {
     }
 }
 
+/// Dobra um char para comparacao: minusculo e sem acento, sempre 1:1.
+///
+/// O 1:1 e o que permite mapear posicoes entre o texto original e o dobrado —
+/// sem isso, achar a keyword nao daria para voltar ao indice no texto original.
+pub fn fold_char(c: char) -> char {
+    fold_accent(c.to_lowercase().next().unwrap_or(c))
+}
+
 /// Minusculas + remocao de acentos, para comparacao textual.
 pub fn normalize(input: &str) -> String {
-    input
-        .chars()
-        .flat_map(char::to_lowercase)
-        .map(fold_accent)
-        .collect()
+    input.chars().map(fold_char).collect()
 }
 
 fn fold_accent(c: char) -> char {

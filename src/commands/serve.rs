@@ -13,6 +13,7 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::error::{AppError, Result};
+use crate::model::{fold_char, normalize};
 
 // ---------------------------------------------------------------------------
 // Structs
@@ -119,7 +120,7 @@ pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<
     // `-3 hours`: o banco guarda datas de Brasilia; `date('now')` e UTC e
     // viraria o dia as 21h, encolhendo a janela em um dia.
     sql.push_str(" AND g.published_at >= date('now', '-3 hours', '-' || ? || ' days')");
-    sql.push_str(" GROUP BY g.id ORDER BY g.published_at DESC LIMIT 200");
+    sql.push_str(" GROUP BY g.id ORDER BY g.published_at DESC LIMIT 1000");
 
     let mut query = sqlx::query(&sql);
     if let Some(value) = &city {
@@ -149,18 +150,14 @@ pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<
         keywords.sort();
         keywords.dedup();
 
+        let raw_excerpt = excerpt.unwrap_or_default();
+        let excerpt_text = excerpt_for(&raw_excerpt, &keywords, EXCERPT_RADIUS);
+
         out.push(GazetteRow {
             date: published_at.format("%d/%m/%Y").to_string(),
             city,
             keywords,
-            // `chars()` e nao slicing: cortar por byte panica em UTF-8.
-            excerpt: excerpt
-                .unwrap_or_default()
-                .chars()
-                .take(200)
-                .collect::<String>()
-                .trim()
-                .to_string(),
+            excerpt: excerpt_text,
             url,
         });
     }
@@ -205,6 +202,86 @@ fn pretty_keyword(raw: &str) -> String {
         .filter(|term| !term.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Chars de contexto de cada lado da keyword na janela do excerpt.
+const EXCERPT_RADIUS: usize = 100;
+
+/// Trecho de ~200 chars centrado na keyword que de fato aparece no texto.
+///
+/// Cortar os primeiros 200 chars escondia justamente o termo que fez a
+/// publicacao casar (ele costuma estar no meio do trecho guardado).
+fn excerpt_for(text: &str, keywords: &[String], radius: usize) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    // `fold_char` e 1:1 com o original, entao indices do texto dobrado valem
+    // para `chars`.
+    let folded: String = chars.iter().copied().map(fold_char).collect();
+
+    for keyword in keywords {
+        if let Some((start, end)) = anchor_span(&folded, keyword, radius, chars.len()) {
+            return render_window(&chars, start, end);
+        }
+    }
+
+    // Nenhuma keyword no texto: comportamento antigo (inicio do trecho).
+    chars.iter().take(radius * 2).collect::<String>().trim().to_string()
+}
+
+/// Posicao (em chars) da janela que envolve a keyword encontrada.
+fn anchor_span(
+    folded: &str,
+    keyword: &str,
+    radius: usize,
+    total_chars: usize,
+) -> Option<(usize, usize)> {
+    for candidate in keyword_candidates(keyword) {
+        if let Some(byte_pos) = folded.find(candidate.as_str()) {
+            let anchor = folded[..byte_pos].chars().count();
+            let keyword_len = candidate.chars().count();
+            let start = anchor.saturating_sub(radius);
+            let end = (anchor + keyword_len + radius).min(total_chars);
+            return Some((start, end));
+        }
+    }
+    None
+}
+
+/// Candidatos de busca, do mais especifico ao mais generico.
+///
+/// A frase inteira primeiro. Se ela nao aparece (comum: a API casa os termos
+/// separadamente), tenta cada termo isolado, do mais longo ao mais curto.
+fn keyword_candidates(keyword: &str) -> Vec<String> {
+    let phrase = normalize(keyword);
+    let mut candidates = Vec::new();
+    if !phrase.is_empty() {
+        candidates.push(phrase);
+    }
+
+    let mut terms: Vec<String> = keyword
+        .split_whitespace()
+        .map(normalize)
+        .filter(|term| term.chars().count() >= 4)
+        .collect();
+    terms.sort_by_key(|term| std::cmp::Reverse(term.chars().count()));
+    candidates.extend(terms);
+
+    candidates
+}
+
+fn render_window(chars: &[char], start: usize, end: usize) -> String {
+    let mut out = String::new();
+    if start > 0 {
+        out.push_str("...");
+    }
+    out.extend(&chars[start..end]);
+    if end < chars.len() {
+        out.push_str("...");
+    }
+    out.trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +515,50 @@ mod tests {
         add_alert(&pool, "g1", "licitacao").await;
 
         let rows = fetch_gazettes(&pool, &Filters::default()).await.unwrap();
+        // Sem keyword no texto: corte normal (2 * raio), sem panico em UTF-8.
         assert_eq!(rows[0].excerpt.chars().count(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_excerpt_centers_on_keyword() {
+        let pool = test_pool().await;
+        let text = format!(
+            "{} dispensa licitacao para compra de materiais {}",
+            "a".repeat(500),
+            "b".repeat(500)
+        );
+        add_gazette(&pool, "g1", "Curitiba", 1, &text).await;
+        add_alert(&pool, "g1", "+dispensa +licitacao").await;
+
+        let rows = fetch_gazettes(&pool, &Filters::default()).await.unwrap();
+        let excerpt = &rows[0].excerpt;
+        let len = excerpt.chars().count();
+
+        assert!(
+            normalize(excerpt).contains("dispensa licitacao"),
+            "o trecho deve conter a keyword, veio: {excerpt:?}"
+        );
+        assert!((150..=250).contains(&len), "tamanho fora da faixa: {len}");
+        assert!(excerpt.starts_with("..."), "deveria marcar corte no inicio: {excerpt:?}");
+        assert!(excerpt.ends_with("..."), "deveria marcar corte no fim: {excerpt:?}");
+    }
+
+    #[test]
+    fn excerpt_usa_termo_quando_a_frase_nao_aparece() {
+        // Caso real: a API casa "+dispensa +licitacao" em documentos que so
+        // trazem "licitacao" — a frase inteira nao existe no texto.
+        let text = format!("{} AVISO DE LICITAÇÃO {}", "x".repeat(300), "y".repeat(300));
+        let out = excerpt_for(&text, &["dispensa licitacao".to_string()], EXCERPT_RADIUS);
+        assert!(normalize(&out).contains("licitacao"), "veio: {out:?}");
+        assert!((150..=250).contains(&out.chars().count()));
+    }
+
+    #[test]
+    fn excerpt_cai_no_inicio_quando_nenhuma_keyword_aparece() {
+        let text = "z".repeat(500);
+        let out = excerpt_for(&text, &["licitacao".to_string()], EXCERPT_RADIUS);
+        assert_eq!(out.chars().count(), 200);
+        assert_eq!(out, "z".repeat(200));
     }
 
     #[tokio::test]
