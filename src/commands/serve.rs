@@ -49,8 +49,12 @@ pub struct Filters {
     pub days: u32,
 }
 
+/// Janela padrao da pagina.
+///
+/// 90 dias e nao 7: os movimentos do DataJud chegam com dias de atraso e a
+/// janela curta esconderia justamente o que a pagina existe para mostrar.
 fn default_days() -> u32 {
-    7
+    90
 }
 
 impl Default for Filters {
