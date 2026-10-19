@@ -6,9 +6,9 @@ use sqlx::SqlitePool;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::model::RawGazette;
-use crate::sources::{FamursSource, QueridoDiario, Source};
+use crate::sources::{DataJudSource, FamursSource, QueridoDiario, Source};
 
 #[derive(Debug, Default)]
 pub struct ScanReport {
@@ -18,12 +18,23 @@ pub struct ScanReport {
     pub duplicates: usize,
 }
 
+/// O que rodar numa execucao.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Escopo {
+    /// Diarios e depois processos.
+    Tudo,
+    /// So Querido Diario + FAMURS (rapido).
+    SoDiarios,
+    /// So DataJud (lento, serial).
+    SoProcessos,
+}
+
 struct Persisted {
     gazette_inserted: bool,
     alert_inserted: bool,
 }
 
-/// Coleta o periodo em todas as fontes configuradas e grava o que e novo.
+/// Coleta o periodo e grava somente o que ainda nao foi visto.
 ///
 /// A deduplicacao acontece no banco, nao na memoria: `INSERT OR IGNORE` no
 /// `alert_hash` e a fonte da verdade. Assim, rodar duas vezes seguidas reporta
@@ -33,8 +44,47 @@ pub async fn run(
     pool: &SqlitePool,
     since: NaiveDate,
     until: NaiveDate,
+    escopo: Escopo,
 ) -> Result<ScanReport> {
-    let sources = build_sources(config)?;
+    let mut report = ScanReport::default();
+
+    // Diarios primeiro: e rapido e cobre a maior parte do uso.
+    if escopo != Escopo::SoProcessos {
+        let mut items = coletar_diarios(config, since, until).await?;
+        aplicar(pool, &mut items, &mut report).await?;
+    }
+
+    // Processos depois, serial: cada consulta leva ~30 s do lado do DataJud.
+    if escopo != Escopo::SoDiarios {
+        if config.processos.is_empty() {
+            if escopo == Escopo::SoProcessos {
+                return Err(AppError::Config(
+                    "nenhum processo configurado: preencha `processos` no config.toml".into(),
+                ));
+            }
+        } else {
+            info!(
+                processos = config.processos.len(),
+                estimativa_segundos = config.processos.len() * 30,
+                "iniciando scan de {} processos — pode levar ~{}s",
+                config.processos.len(),
+                config.processos.len() * 30
+            );
+
+            let mut items = coletar_processos(config, since, until).await?;
+            aplicar(pool, &mut items, &mut report).await?;
+        }
+    }
+
+    Ok(report)
+}
+
+async fn coletar_diarios(
+    config: &Config,
+    since: NaiveDate,
+    until: NaiveDate,
+) -> Result<Vec<(String, RawGazette)>> {
+    let sources = build_sources_diarios(config)?;
 
     info!(
         %since,
@@ -43,11 +93,29 @@ pub async fn run(
         territorios = config.territories.len(),
         entidades_famurs = config.famurs_entities.len(),
         fontes = sources.len(),
-        "iniciando coleta"
+        "iniciando coleta de diarios"
     );
 
-    // Uma fonte com problema nao deve derrubar as outras: o monitor prefere
-    // entregar dados parciais a nao entregar nada. Se *todas* falharem, erra.
+    coletar(sources, config, since, until).await
+}
+
+async fn coletar_processos(
+    config: &Config,
+    since: NaiveDate,
+    until: NaiveDate,
+) -> Result<Vec<(String, RawGazette)>> {
+    let sources = build_sources_processos(config)?;
+    coletar(sources, config, since, until).await
+}
+
+/// Uma fonte com problema nao deve derrubar as outras: o monitor prefere
+/// entregar dados parciais a nao entregar nada. Se *todas* falharem, erra.
+async fn coletar(
+    sources: Vec<Arc<dyn Source>>,
+    config: &Config,
+    since: NaiveDate,
+    until: NaiveDate,
+) -> Result<Vec<(String, RawGazette)>> {
     let mut collected: Vec<(String, RawGazette)> = Vec::new();
     let mut failures = Vec::new();
 
@@ -60,6 +128,11 @@ pub async fn run(
             Ok(items) => {
                 info!(fonte = name, itens = items.len(), "fonte coletada");
                 collected.extend(items.into_iter().map(|item| (name.to_string(), item)));
+            }
+            Err(err @ AppError::Config(_)) => {
+                // Configuracao errada nao melhora rodando as outras fontes.
+                warn!(fonte = name, error = %err, "configuracao invalida; abortando");
+                return Err(err);
             }
             Err(err) => {
                 warn!(fonte = name, error = %err, "fonte falhou; seguindo com as demais");
@@ -74,12 +147,17 @@ pub async fn run(
         }
     }
 
-    let mut report = ScanReport {
-        collected: collected.len(),
-        ..Default::default()
-    };
+    Ok(collected)
+}
 
-    for (source_name, item) in collected {
+async fn aplicar(
+    pool: &SqlitePool,
+    items: &mut Vec<(String, RawGazette)>,
+    report: &mut ScanReport,
+) -> Result<()> {
+    report.collected += items.len();
+
+    for (source_name, item) in items.drain(..) {
         let persisted = persist(pool, &source_name, &item).await?;
 
         if persisted.gazette_inserted {
@@ -102,10 +180,10 @@ pub async fn run(
         }
     }
 
-    Ok(report)
+    Ok(())
 }
 
-fn build_sources(config: &Config) -> Result<Vec<Arc<dyn Source>>> {
+fn build_sources_diarios(config: &Config) -> Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
 
     sources.push(Arc::new(QueridoDiario::new(
@@ -126,6 +204,19 @@ fn build_sources(config: &Config) -> Result<Vec<Arc<dyn Source>>> {
                 entity_id.clone(),
             )));
         }
+    }
+
+    Ok(sources)
+}
+
+fn build_sources_processos(config: &Config) -> Result<Vec<Arc<dyn Source>>> {
+    let mut sources: Vec<Arc<dyn Source>> = Vec::new();
+
+    if !config.processos.is_empty() {
+        sources.push(Arc::new(DataJudSource::new(
+            config.datajud_api_key.clone(),
+            config.processos.clone(),
+        )?));
     }
 
     Ok(sources)
@@ -187,6 +278,7 @@ async fn persist(pool: &SqlitePool, source_name: &str, item: &RawGazette) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProcessoMonitorado;
 
     fn config_base() -> Config {
         Config {
@@ -197,7 +289,7 @@ mod tests {
 
     #[test]
     fn sem_entidades_famurs_so_tem_querido_diario() {
-        let sources = build_sources(&config_base()).unwrap();
+        let sources = build_sources_diarios(&config_base()).unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name(), "querido_diario");
     }
@@ -208,10 +300,34 @@ mod tests {
             famurs_entities: vec!["64462".to_string(), "64463".to_string()],
             ..config_base()
         };
-        let sources = build_sources(&config).unwrap();
+        let sources = build_sources_diarios(&config).unwrap();
         assert_eq!(sources.len(), 3);
         assert_eq!(sources[0].name(), "querido_diario");
         assert_eq!(sources[1].name(), "famurs");
         assert_eq!(sources[2].name(), "famurs");
+    }
+
+    #[test]
+    fn diarios_e_processos_ficam_separados() {
+        let config = Config {
+            processos: vec![ProcessoMonitorado {
+                numero: "00011552020248272734".to_string(),
+                tribunal: "stj".to_string(),
+                apelido: "x".to_string(),
+            }],
+            ..config_base()
+        };
+
+        let diarios = build_sources_diarios(&config).unwrap();
+        assert!(diarios.iter().all(|source| source.name() != "datajud"));
+
+        let processos = build_sources_processos(&config).unwrap();
+        assert_eq!(processos.len(), 1);
+        assert_eq!(processos[0].name(), "datajud");
+    }
+
+    #[test]
+    fn sem_processos_nao_cria_fonte_datajud() {
+        assert!(build_sources_processos(&config_base()).unwrap().is_empty());
     }
 }
