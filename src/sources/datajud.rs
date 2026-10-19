@@ -227,7 +227,6 @@ struct ProcessoSource {
     id: String,
     tribunal: String,
     grau: String,
-    #[allow(dead_code)]
     numero_processo: String,
     #[serde(default)]
     nivel_sigilo: u32,
@@ -285,32 +284,33 @@ fn gazettes_from_body(body: &str, processo: &ProcessoMonitorado) -> Result<Vec<R
         .map(|wrapper| wrapper.source)
         .ok_or_else(|| AppError::Parse("resposta sem _source".into()))?;
 
-    let published_at = parse_data_ajuizamento(&source.data_ajuizamento)?;
+    // `dataAjuizamento` NAO serve como data da publicacao: cada movimento tem
+    // a sua. O campo so e validado; se vier torto, seguimos com a data do
+    // movimento em vez de derrubar o processo.
+    if let Err(err) = parse_data_ajuizamento(&source.data_ajuizamento) {
+        warn!(
+            numero = %source.numero_processo,
+            error = %err,
+            "dataAjuizamento invalido; usando a data de cada movimento"
+        );
+    }
 
     // A ordem do JSON nao e confiavel: TJSP/TJRS vem decrescente, STJ crescente.
     let mut movimentos = source.movimentos.clone();
     movimentos.sort_by(|a, b| a.data_hora.cmp(&b.data_hora));
 
     let territorio = format!("{}:{}", source.tribunal, source.grau);
-    let apelido = if processo.apelido.trim().is_empty() {
+    let apelido = processo.apelido.trim().to_string();
+    let nome = if apelido.is_empty() {
         processo.numero.clone()
     } else {
-        processo.apelido.trim().to_string()
+        apelido.clone()
     };
-    let territory_name = format!("{} — {}", source.tribunal, apelido);
+    let territory_name = format!("{} — {}", source.tribunal, nome);
 
     let gazettes = movimentos
         .iter()
-        .map(|movimento| {
-            movement_to_raw(
-                &source,
-                movimento,
-                &territorio,
-                &territory_name,
-                &apelido,
-                published_at,
-            )
-        })
+        .map(|movimento| movement_to_raw(&source, movimento, &territorio, &territory_name, &apelido))
         .collect();
 
     Ok(gazettes)
@@ -322,7 +322,6 @@ fn movement_to_raw(
     territorio: &str,
     territory_name: &str,
     apelido: &str,
-    published_at: NaiveDate,
 ) -> RawGazette {
     // Um movimento = uma publicacao. Sem isso, movimento novo no mesmo processo
     // seria deduplicado contra o processo inteiro e nunca alertaria.
@@ -333,10 +332,17 @@ fn movement_to_raw(
         movimento.data_hora.to_rfc3339()
     );
 
-    let excerpt = if source.nivel_sigilo != 0 {
+    let base = if source.nivel_sigilo != 0 {
         format!("[PROCESSO SIGILOSO] {}", movimento.nome)
     } else {
         describe_movimento(movimento)
+    };
+    // O apelido do config e contexto, nao classificacao: vai no texto, nao no
+    // badge (que passa a mostrar o tipo de movimento).
+    let excerpt = if apelido.is_empty() {
+        base
+    } else {
+        format!("[{apelido}] {base}")
     };
 
     RawGazette {
@@ -344,9 +350,9 @@ fn movement_to_raw(
         territory_id: territorio.to_string(),
         territory_name: territory_name.to_string(),
         state_code: "BR".to_string(),
-        published_at,
-        // O DataJud nao tem pagina publica por processo; o link aponta para a
-        // consulta que gerou o dado.
+        // Cada movimento tem a sua data; a de ajuizamento e so do processo.
+        published_at: movimento.data_hora.date_naive(),
+        // A UI troca esta URL pela consulta publica do tribunal (ver serve.rs).
         url: format!(
             "{BASE_URL}/api_publica_{}/_search",
             source.tribunal.to_lowercase()
@@ -355,7 +361,7 @@ fn movement_to_raw(
         edition: None,
         is_extra_edition: false,
         excerpts: vec![excerpt],
-        matched_keyword: apelido.to_string(),
+        matched_keyword: movimento.nome.clone(),
     }
 }
 
@@ -432,6 +438,14 @@ mod tests {
 
         assert_eq!(gazettes.len(), 83, "o fixture real tem 83 movimentos");
         assert_eq!(gazettes[0].published_at.to_string(), "2023-10-25");
+        assert_eq!(
+            gazettes.last().unwrap().published_at.to_string(),
+            "2026-10-01",
+            "cada movimento usa a propria dataHora, nao a de ajuizamento"
+        );
+        let datas: std::collections::BTreeSet<_> =
+            gazettes.iter().map(|g| g.published_at).collect();
+        assert!(datas.len() > 1, "as datas devem variar entre os movimentos");
         assert!(gazettes
             .iter()
             .all(|g| g.external_id.starts_with("TJSP_G1_10047296420238260481:")));
@@ -496,11 +510,24 @@ mod tests {
 
         assert_eq!(gazettes.len(), 1);
         assert!(
-            gazettes[0].excerpts[0].starts_with("[PROCESSO SIGILOSO]"),
+            gazettes[0].excerpts[0].contains("[PROCESSO SIGILOSO]"),
             "veio: {:?}",
             gazettes[0].excerpts[0]
         );
         assert!(gazettes[0].excerpts[0].contains("Remessa"));
+    }
+
+    #[test]
+    fn badge_mostra_o_movimento_e_apelido_vai_no_texto() {
+        let body = body_sintetico(&[(1, "Recebimento", "2023-01-01T00:00:00.000Z")], 0);
+        let gazettes = gazettes_from_body(&body, &processo_teste()).unwrap();
+
+        assert_eq!(gazettes[0].matched_keyword, "Recebimento");
+        assert!(
+            gazettes[0].excerpts[0].starts_with("[Caso Epitácio]"),
+            "veio: {:?}",
+            gazettes[0].excerpts[0]
+        );
     }
 
     #[test]

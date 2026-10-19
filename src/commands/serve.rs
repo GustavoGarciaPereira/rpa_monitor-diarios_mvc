@@ -27,7 +27,7 @@ const INDEX_HTML: &str = include_str!("../../templates/index.html");
 pub struct Stats {
     pub total_gazettes: i64,
     pub total_alerts: i64,
-    pub total_cities: i64,
+    pub total_sources: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +37,8 @@ pub struct GazetteRow {
     pub keywords: Vec<String>,
     pub excerpt: String,
     pub url: String,
+    /// Texto do link, que varia por fonte ("Abrir PDF", "Ver no STJ"...).
+    pub link_label: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,7 +113,7 @@ pub async fn fetch_stats(pool: &SqlitePool, filters: &Filters) -> Result<Stats> 
         r#"
         SELECT COUNT(DISTINCT g.id)           AS gazettes,
                COUNT(a.id)                    AS alerts,
-               COUNT(DISTINCT g.territory_name) AS cities
+               COUNT(DISTINCT g.source || ':' || g.territory_name) AS sources
         FROM gazettes g
         JOIN alerts a ON a.gazette_id = g.id
         WHERE 1 = 1{conditions}
@@ -132,7 +134,7 @@ pub async fn fetch_stats(pool: &SqlitePool, filters: &Filters) -> Result<Stats> 
     Ok(Stats {
         total_gazettes: row.try_get("gazettes")?,
         total_alerts: row.try_get("alerts")?,
-        total_cities: row.try_get("cities")?,
+        total_sources: row.try_get("sources")?,
     })
 }
 
@@ -153,6 +155,7 @@ pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<
     let mut sql = String::from(
         r#"
         SELECT g.published_at, g.territory_name, g.excerpt, g.url,
+               g.source, g.external_id,
                GROUP_CONCAT(DISTINCT a.keyword) AS keywords
         FROM gazettes g
         JOIN alerts a ON a.gazette_id = g.id
@@ -179,7 +182,9 @@ pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<
         let published_at: NaiveDate = row.try_get("published_at")?;
         let city: String = row.try_get("territory_name")?;
         let excerpt: Option<String> = row.try_get("excerpt")?;
-        let url: String = row.try_get("url")?;
+        let stored_url: String = row.try_get("url")?;
+        let source: String = row.try_get("source")?;
+        let external_id: String = row.try_get("external_id")?;
         let keywords: Option<String> = row.try_get("keywords")?;
 
         let mut keywords: Vec<String> = keywords
@@ -193,6 +198,7 @@ pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<
 
         let raw_excerpt = excerpt.unwrap_or_default();
         let excerpt_text = excerpt_for(&raw_excerpt, &keywords, EXCERPT_RADIUS);
+        let (url, link_label) = public_link(&source, &external_id, &stored_url);
 
         out.push(GazetteRow {
             date: published_at.format("%d/%m/%Y").to_string(),
@@ -200,6 +206,7 @@ pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<
             keywords,
             excerpt: excerpt_text,
             url,
+            link_label,
         });
     }
 
@@ -245,8 +252,79 @@ fn pretty_keyword(raw: &str) -> String {
         .join(" ")
 }
 
+/// Fallback que funciona em qualquer tribunal.
+const CNJ_FALLBACK: &str = "https://www.cnj.jus.br/consultaprocessos/";
+
+/// URL publica e rotulo do link, por fonte.
+///
+/// O DataJud guarda no `external_id` o tribunal e o numero do processo.
+/// As URLs foram testadas em 2026-10-19 (ver docs/datajud-findings.md):
+/// apenas STJ e TJSP abrem o processo direto. TJRJ e TJRS carregam a tela de
+/// consulta sem o processo, TRF4 esta 404 e o STJ nao e verificavel daqui
+/// (Cloudflare). Para esses, o CNJ e honesto: funciona em todo tribunal, mas
+/// nao promete abrir o processo.
+fn public_link(source: &str, external_id: &str, stored_url: &str) -> (String, String) {
+    if source != "datajud" {
+        let label = if source == "famurs" {
+            "Abrir matéria →"
+        } else {
+            "Abrir PDF →"
+        };
+        return (stored_url.to_string(), label.to_string());
+    }
+
+    let (tribunal, numero) = datajud_identity(external_id);
+
+    match tribunal.as_str() {
+        // O portal do STJ abre a tela inicial sem `tipoPesquisa`.
+        "STJ" => (
+            format!(
+                "https://processo.stj.jus.br/processo/pesquisa/?tipoPesquisa=tipoPesquisaNumeroUnico&termo={numero}&aplicacao=processos.ea"
+            ),
+            "Ver no STJ →".to_string(),
+        ),
+        // `show.do` com `processo.numero` abre o formulario; a consulta
+        // unificada por numero CNJ (formatado) abre o processo.
+        "TJSP" => (
+            format!(
+                "https://esaj.tjsp.jus.br/cpopg/search.do?conversationId=&cbPesquisa=NUMPROC&dadosConsulta.tipoNuProcesso=UNIFICADO&dadosConsulta.valorConsultaNuUnificado={}",
+                format_numero_cnj(&numero)
+            ),
+            "Ver no TJSP →".to_string(),
+        ),
+        _ => (CNJ_FALLBACK.to_string(), "Consultar no CNJ →".to_string()),
+    }
+}
+
+/// Extrai `(tribunal, numero)` de `{tribunal}_{grau}_{numero}:{codigo}:{datahora}`.
+fn datajud_identity(external_id: &str) -> (String, String) {
+    let head = external_id.split(':').next().unwrap_or_default();
+    let mut parts = head.split('_');
+    let tribunal = parts.next().unwrap_or_default().to_uppercase();
+    let numero = parts.next_back().unwrap_or_default().to_string();
+    (tribunal, numero)
+}
+
+/// `10047296420238260481` -> `1004729-64.2023.8.26.0481`.
+fn format_numero_cnj(numero: &str) -> String {
+    let digits: String = numero.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() != 20 {
+        return numero.to_string();
+    }
+    format!(
+        "{}-{}.{}.{}.{}.{}",
+        &digits[0..7],
+        &digits[7..9],
+        &digits[9..13],
+        &digits[13..14],
+        &digits[14..16],
+        &digits[16..20]
+    )
+}
+
 /// Chars de contexto de cada lado da keyword na janela do excerpt.
 const EXCERPT_RADIUS: usize = 100;
+
 
 /// Trecho de ~200 chars centrado na keyword que de fato aparece no texto.
 ///
@@ -546,7 +624,7 @@ mod tests {
         let stats = fetch_stats(&pool, &Filters::default()).await.unwrap();
         assert_eq!(stats.total_gazettes, 0);
         assert_eq!(stats.total_alerts, 0);
-        assert_eq!(stats.total_cities, 0);
+        assert_eq!(stats.total_sources, 0);
     }
 
     #[tokio::test]
@@ -665,7 +743,7 @@ mod tests {
         let all = fetch_stats(&pool, &Filters::default()).await.unwrap();
         assert_eq!(all.total_gazettes, 2);
         assert_eq!(all.total_alerts, 2);
-        assert_eq!(all.total_cities, 2);
+        assert_eq!(all.total_sources, 2);
 
         // Os cards precisam acompanhar o filtro, senao contradizem a lista.
         let by_city = Filters {
@@ -675,7 +753,7 @@ mod tests {
         let stats = fetch_stats(&pool, &by_city).await.unwrap();
         assert_eq!(stats.total_gazettes, 1);
         assert_eq!(stats.total_alerts, 1);
-        assert_eq!(stats.total_cities, 1);
+        assert_eq!(stats.total_sources, 1);
 
         let by_keyword = Filters {
             keyword: Some("dispensa".into()),
@@ -700,9 +778,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fontes_contam_origem_nao_apenas_cidade() {
+        let pool = test_pool().await;
+        add_gazette(&pool, "g1", "Curitiba", 1, "a").await;
+        add_gazette(&pool, "g2", "Curitiba", 1, "b").await;
+        add_alert(&pool, "g1", "x").await;
+        add_alert(&pool, "g2", "x").await;
+
+        // Mesma cidade, fontes diferentes: precisa contar como 2 origens.
+        sqlx::query("UPDATE gazettes SET source='famurs' WHERE id='g2'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let stats = fetch_stats(&pool, &Filters::default()).await.unwrap();
+        assert_eq!(stats.total_sources, 2);
+    }
+
+    #[tokio::test]
     async fn test_fetch_last_update_vazio() {
         let pool = test_pool().await;
         assert_eq!(fetch_last_update(&pool).await.unwrap(), "—");
+    }
+
+    #[test]
+    fn test_stj_url_has_tipo_pesquisa_param() {
+        let (url, label) = public_link(
+            "datajud",
+            "STJ_SUP_00011552020248272734:26:2026-09-04T18:01:20+00:00",
+            "https://api-publica.datajud.cnj.jus.br/api_publica_stj/_search",
+        );
+        assert!(
+            url.contains("tipoPesquisa=tipoPesquisaNumeroUnico"),
+            "sem esse parametro o portal abre a tela inicial: {url}"
+        );
+        assert!(url.contains("termo=00011552020248272734"));
+        assert_eq!(label, "Ver no STJ →");
+    }
+
+    #[test]
+    fn test_tjsp_usa_consulta_unificada_com_numero_formatado() {
+        let (url, label) = public_link(
+            "datajud",
+            "TJSP_G1_10047296420238260481:1:2026-01-01T00:00:00+00:00",
+            "",
+        );
+        assert!(url.contains("valorConsultaNuUnificado=1004729-64.2023.8.26.0481"));
+        assert_eq!(label, "Ver no TJSP →");
+        // `show.do?processo.numero=` cai no formulario; nao usar.
+        assert!(!url.contains("show.do"), "show.do abre o formulario: {url}");
+    }
+
+    #[test]
+    fn test_fallback_cnj_for_unknown() {
+        let (url, label) = public_link("datajud", "TJGO_G1_123:1:2026-01-01T00:00:00+00:00", "");
+        assert_eq!(url, CNJ_FALLBACK);
+        assert_eq!(label, "Consultar no CNJ →");
+    }
+
+    #[test]
+    fn tribunais_sem_url_estavel_caem_no_cnj() {
+        // Testados em 2026-10-19: TJRJ e TJRS carregam a tela de consulta sem
+        // o processo e TRF4 responde 404.
+        for tribunal in ["TJRJ", "TJRS", "TRF4"] {
+            let external = format!("{tribunal}_G1_12345678920248190001:1:2026-01-01T00:00:00+00:00");
+            let (url, label) = public_link("datajud", &external, "");
+            assert_eq!(url, CNJ_FALLBACK, "{tribunal} deveria cair no CNJ");
+            assert_eq!(label, "Consultar no CNJ →");
+        }
+    }
+
+    #[test]
+    fn urls_conhecidas_levam_o_numero_e_nao_a_home() {
+        let numero = "10047296420238260481";
+
+        for tribunal in ["STJ", "TJSP"] {
+            let external = format!("{tribunal}_G1_{numero}:1:2026-01-01T00:00:00+00:00");
+            let (url, label) = public_link("datajud", &external, "");
+
+            assert!(
+                url.contains(numero) || url.contains(&format_numero_cnj(numero)),
+                "{tribunal}: URL sem o numero do processo: {url}"
+            );
+            assert!(
+                !url.ends_with(".jus.br/"),
+                "{tribunal}: URL aponta para a home: {url}"
+            );
+            assert!(label.starts_with("Ver no "), "{tribunal}: {label}");
+        }
+    }
+
+    #[test]
+    fn diarios_mantem_a_url_original() {
+        let (url, label) = public_link(
+            "famurs",
+            "D6898EDE",
+            "https://www.diariomunicipal.com.br/famurs/materia/D6898EDE",
+        );
+        assert_eq!(url, "https://www.diariomunicipal.com.br/famurs/materia/D6898EDE");
+        assert_eq!(label, "Abrir matéria →");
+
+        let (_, label_pdf) = public_link("querido_diario", "x", "https://exemplo/x.pdf");
+        assert_eq!(label_pdf, "Abrir PDF →");
     }
 
     #[test]
