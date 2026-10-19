@@ -63,6 +63,7 @@ DATABASE_URL          url do SQLite
 MONITOR_KEYWORDS      lista separada por vírgula
 MONITOR_TERRITORIES   lista separada por vírgula
 MONITOR_FAMURS_ENTITIES
+MONITOR_TEMPLATE_FILE template lido do disco a cada request (dev)
 TELEGRAM_TOKEN / TELEGRAM_CHAT_ID
 ```
 
@@ -129,7 +130,10 @@ gazette), o que permite medir cada keyword separadamente.
 O template é um HTML único (`templates/index.html`) embutido no binário via
 `include_str!` e estilizado com Tailwind por CDN.
 
-**Editar o template exige `cargo build`** — não é recarregado a quente.
+Em build de **debug** (dev), o HTML é lido do disco a cada request: edite
+`templates/index.html` e recarregue o browser — sem recompilar. O release usa o
+embutido (zero I/O por request); `MONITOR_TEMPLATE_FILE=/caminho.html` força a
+leitura de um arquivo no disco.
 
 ## Deploy
 
@@ -157,9 +161,13 @@ imagem).
 ## Desenvolvimento
 
 ```bash
-cargo test                                  # 33 testes
+cargo test                                  # 35 testes
 cargo clippy --all-targets -- -D warnings   # precisa passar limpo
 cargo build --release
+
+# Loop de dev: reinicia o servidor sozinho a cada arquivo salvo
+cargo install cargo-watch                   # uma vez
+cargo watch -x 'run -- serve'
 ```
 
 ```

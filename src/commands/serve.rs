@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -14,6 +15,9 @@ use tracing::info;
 use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::model::{fold_char, normalize};
+
+/// Template embutido no binario (producao). Em dev o HTML vem do disco.
+const INDEX_HTML: &str = include_str!("../../templates/index.html");
 
 // ---------------------------------------------------------------------------
 // Structs
@@ -293,6 +297,8 @@ struct AppState {
     pool: SqlitePool,
     rss_mb: f64,
     template_env: Arc<minijinja::Environment<'static>>,
+    /// Caminho do template lido do disco a cada request; `None` = embutido.
+    live_template: Option<PathBuf>,
 }
 
 async fn handler_index(
@@ -319,8 +325,8 @@ async fn handler_index(
         last_update => last_update?,
     };
 
-    let template = state.template_env.get_template("index.html")?;
-    Ok(Html(template.render(context)?))
+    let html = render_index(&state.template_env, state.live_template.as_deref(), context)?;
+    Ok(Html(html))
 }
 
 async fn handler_health() -> &'static str {
@@ -333,12 +339,21 @@ async fn handler_health() -> &'static str {
 
 pub async fn run(config: &Config, pool: SqlitePool, addr: SocketAddr) -> Result<()> {
     let mut env = minijinja::Environment::new();
-    env.add_template("index.html", include_str!("../../templates/index.html"))?;
+    env.add_template("index.html", INDEX_HTML)?;
+
+    let live_template = live_template_path();
+    if let Some(path) = &live_template {
+        info!(
+            caminho = %path.display(),
+            "hot-reload do template ativo: edite o HTML e recarregue o browser"
+        );
+    }
 
     let state = AppState {
         pool,
         rss_mb: read_rss_mb(),
         template_env: Arc::new(env),
+        live_template,
     };
 
     let app = Router::new()
@@ -359,6 +374,45 @@ pub async fn run(config: &Config, pool: SqlitePool, addr: SocketAddr) -> Result<
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Caminho do template lido do disco a cada request.
+///
+/// Ativo em build de debug (dev) e quando `MONITOR_TEMPLATE_FILE` aponta um
+/// arquivo: editar o HTML e so recarregar o browser, sem recompilar. Em
+/// release o template embutido e usado, sem I/O por request.
+fn live_template_path() -> Option<PathBuf> {
+    if let Ok(raw) = std::env::var("MONITOR_TEMPLATE_FILE") {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            return Some(PathBuf::from(raw));
+        }
+    }
+    if cfg!(debug_assertions) {
+        return Some(PathBuf::from("templates/index.html"));
+    }
+    None
+}
+
+/// Renderiza o index, preferindo o arquivo em disco quando configurado.
+///
+/// Se o arquivo sumir ou ficar ilegivel, cai no embutido em vez de derrubar a
+/// pagina — durante o dev isso evita um 500 a cada save incompleto.
+fn render_index(
+    env: &minijinja::Environment<'static>,
+    live_template: Option<&Path>,
+    context: minijinja::Value,
+) -> Result<String> {
+    if let Some(path) = live_template {
+        if let Ok(source) = std::fs::read_to_string(path) {
+            return minijinja::Environment::new()
+                .render_str(&source, context)
+                .map_err(Into::into);
+        }
+    }
+
+    let template = env.get_template("index.html")?;
+    Ok(template.render(context)?)
 }
 
 fn read_rss_mb() -> f64 {
@@ -580,5 +634,32 @@ mod tests {
             ..Filters::default()
         };
         assert_eq!(zero.effective_days(), 1);
+    }
+
+    #[test]
+    fn render_usa_arquivo_do_disco_quando_existe() {
+        let path = std::env::temp_dir().join(format!("monitor_tpl_{}.html", std::process::id()));
+        std::fs::write(&path, "DISCO {{ city }}").unwrap();
+
+        let mut env = minijinja::Environment::new();
+        env.add_template("index.html", "EMBUTIDO").unwrap();
+
+        let html =
+            render_index(&env, Some(&path), minijinja::context! { city => "Curitiba" }).unwrap();
+        assert_eq!(html, "DISCO Curitiba");
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn render_cai_no_embutido_quando_o_arquivo_some() {
+        // Arquivo inexistente: a pagina continua no ar com o template embutido.
+        let path = std::env::temp_dir().join("monitor_tpl_nao_existe_12345.html");
+
+        let mut env = minijinja::Environment::new();
+        env.add_template("index.html", "EMBUTIDO").unwrap();
+
+        let html = render_index(&env, Some(&path), minijinja::context! {}).unwrap();
+        assert_eq!(html, "EMBUTIDO");
     }
 }
