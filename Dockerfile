@@ -29,6 +29,11 @@ COPY --from=builder /app/target/release/monitor-diarios /usr/local/bin/monitor-d
 
 WORKDIR /app
 
+# Vale para QUALQUER processo no container, inclusive `fly ssh console -C`.
+# Sem isso, um scan manual grava em /app/monitor.db (efemero) em vez do volume,
+# e a pagina nunca ve os dados.
+ENV DATABASE_URL="sqlite:/app/data/monitor.db?mode=rwc"
+
 # `templates/` entra por `include_str!` e `migrations/` por `sqlx::migrate!`,
 # ou seja, ja estao dentro do binario. As copias servem para inspecao/debug.
 COPY templates ./templates

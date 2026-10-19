@@ -95,6 +95,10 @@ aborta tudo. CLI: `scan`, `scan --only-diarios`, `scan --only-processos`,
 ## Armadilhas ja pagas
 - **`.env` com `DATABASE_URL` sobrescreve** o `database_url` do `--config`.
   Para usar outro banco, exporte `DATABASE_URL` explicitamente.
+- No Fly, o `DATABASE_URL` vem de `ENV` na imagem (nao do `start.sh`): um
+  `fly ssh console -C "monitor-diarios scan ..."` so escreve no volume se o
+  processo herdar essa env. Sem ela, grava em `/app/monitor.db` (efemero) e a
+  pagina nao ve os dados.
 - `SqlitePool::connect` falha se o arquivo nao existe — usamos
   `create_if_missing(true)`.
 - `date('now')` e UTC: a janela usa `date('now','-3 hours', ...)`.
