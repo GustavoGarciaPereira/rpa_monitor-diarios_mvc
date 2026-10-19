@@ -4,9 +4,11 @@ use chrono::NaiveDate;
 use crate::error::Result;
 use crate::model::RawGazette;
 
+pub mod datajud;
 pub mod famurs;
 pub mod querido_diario;
 
+pub use datajud::DataJudSource;
 pub use famurs::FamursSource;
 pub use querido_diario::QueridoDiario;
 

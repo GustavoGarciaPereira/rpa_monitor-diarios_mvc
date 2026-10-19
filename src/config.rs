@@ -4,6 +4,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
 
+/// Processo acompanhado no DataJud.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessoMonitorado {
+    /// Numero CNJ com 20 digitos, sem pontuacao.
+    pub numero: String,
+    /// Tribunal em minusculo (`tjsp`, `tjrj`, `tjrs`, `trf4`, `stj`).
+    pub tribunal: String,
+    /// Nome curto para a UI; vazio usa o numero.
+    #[serde(default)]
+    pub apelido: String,
+}
+
 /// Configuracao do monitor.
 ///
 /// Precedencia: `config.toml` < variaveis de ambiente.
@@ -21,6 +33,14 @@ pub struct Config {
     /// Entidades do portal da FAMURS (RS). Vazio = nao usa essa fonte.
     #[serde(default)]
     pub famurs_entities: Vec<String>,
+
+    /// Processos acompanhados no DataJud (CNJ).
+    #[serde(default)]
+    pub processos: Vec<ProcessoMonitorado>,
+
+    /// Chave publica do DataJud. Vazia = erro se houver processos configurados.
+    #[serde(default)]
+    pub datajud_api_key: String,
 
     /// URL do SQLite, ex.: `sqlite:monitor.db`.
     #[serde(default = "default_database_url")]
@@ -60,6 +80,8 @@ impl Default for Config {
             keywords: Vec::new(),
             territories: Vec::new(),
             famurs_entities: Vec::new(),
+            processos: Vec::new(),
+            datajud_api_key: String::new(),
             database_url: default_database_url(),
             telegram_token: None,
             telegram_chat_id: None,
@@ -109,6 +131,20 @@ impl Config {
             if e.is_empty() || !e.chars().all(|c| c.is_ascii_digit()) {
                 return Err(AppError::Config(format!(
                     "famurs_entities invalido: {entity:?} (esperado id numerico, ex. 64462)"
+                )));
+            }
+        }
+        for processo in &self.processos {
+            let numero = processo.numero.trim();
+            if numero.chars().count() != 20 || !numero.chars().all(|c| c.is_ascii_digit()) {
+                return Err(AppError::Config(format!(
+                    "numero de processo invalido: {:?} (esperado 20 digitos, sem pontuacao)",
+                    processo.numero
+                )));
+            }
+            if processo.tribunal.trim().is_empty() {
+                return Err(AppError::Config(format!(
+                    "processo {numero} sem tribunal configurado"
                 )));
             }
         }
@@ -164,6 +200,11 @@ impl Config {
         }
         if let Ok(v) = std::env::var("MONITOR_FAMURS_ENTITIES") {
             self.famurs_entities = split_list(&v);
+        }
+        if let Ok(v) = std::env::var("DATAJUD_API_KEY") {
+            if !v.trim().is_empty() {
+                self.datajud_api_key = v;
+            }
         }
     }
 }

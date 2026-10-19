@@ -50,6 +50,8 @@ um erro). Pare o servidor com `Ctrl+C`.
 | `keywords` | — | obrigatório para `scan` |
 | `territories` | `[]` | IDs IBGE de 7 dígitos; vazio = busca nacional |
 | `famurs_entities` | `[]` | IDs de entidade do portal da FAMURS (RS) |
+| `processos` | `[]` | processos do DataJud (`numero`, `tribunal`, `apelido`) |
+| `datajud_api_key` | — | chave pública do DataJud (também em `DATAJUD_API_KEY`) |
 | `database_url` | `sqlite:monitor.db` | |
 | `page_size` | `200` | itens por página na API |
 | `max_results_per_keyword` | `2000` | teto por keyword, evita varrer o país |
@@ -92,6 +94,7 @@ Essas armadilhas estão documentadas com medições em
 |---|---|---|
 | `querido_diario` | nacional, por município | JSON (API) |
 | `famurs` | municípios do RS conveniados | HTML |
+| `datajud` | processos específicos (CNJ) | JSON (Elasticsearch) |
 
 **A cobertura é desigual e isso muda o resultado.** Exemplos verificados:
 

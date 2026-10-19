@@ -60,3 +60,16 @@ max_results_per_keyword = 500
 # 64462 = Prefeitura Municipal de Sao Sepe
 # Vazio = nao usa a fonte FAMURS.
 famurs_entities = ["64462"]
+
+# DataJud — monitoramento de processos (CNJ)
+# A chave publica vigente fica em https://datajud-wiki.cnj.jus.br/api-publica/acesso/
+# e pode ser trocada pelo CNJ; a env DATAJUD_API_KEY tem precedencia sobre o arquivo.
+# Aceita com ou sem o prefixo "APIKey ".
+datajud_api_key = "APIKey cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw=="
+
+# Tribunais suportados: tjsp, tjrj, tjrs, trf4, stj
+# (STF nao esta no DataJud)
+[[processos]]
+numero = "10047296420238260481"  # 20 digitos, sem pontuacao
+tribunal = "tjsp"
+apelido = "Exemplo — apague este"
