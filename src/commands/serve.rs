@@ -80,29 +80,75 @@ struct FilterView {
 // Queries
 // ---------------------------------------------------------------------------
 
-pub async fn fetch_stats(pool: &SqlitePool) -> Result<Stats> {
-    let total_gazettes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gazettes")
-        .fetch_one(pool)
-        .await?;
-    let total_alerts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alerts")
-        .fetch_one(pool)
-        .await?;
-    let total_cities: i64 =
-        sqlx::query_scalar("SELECT COUNT(DISTINCT territory_id) FROM gazettes")
-            .fetch_one(pool)
-            .await?;
-
-    Ok(Stats {
-        total_gazettes,
-        total_alerts,
-        total_cities,
-    })
-}
-
-pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<GazetteRow>> {
+/// Condicoes comuns a lista e aos cards de estatistica.
+///
+/// Os mesmos filtros precisam valer para os dois: senao os numeros do topo
+/// contradizem a lista logo abaixo.
+fn filter_parts(filters: &Filters) -> (String, Option<String>, Option<String>, i64) {
     let city = clean_filter(filters.city.as_deref());
     let keyword = clean_filter(filters.keyword.as_deref());
     let days = filters.effective_days();
+
+    let mut sql = String::new();
+    if city.is_some() {
+        sql.push_str(" AND g.territory_name LIKE '%' || ? || '%'");
+    }
+    if keyword.is_some() {
+        sql.push_str(" AND a.keyword LIKE '%' || ? || '%'");
+    }
+    // `-3 hours`: o banco guarda datas de Brasilia; `date('now')` e UTC e
+    // viraria o dia as 21h, encolhendo a janela em um dia.
+    sql.push_str(" AND g.published_at >= date('now', '-3 hours', '-' || ? || ' days')");
+
+    (sql, city, keyword, days)
+}
+
+/// Numeros do topo, sempre respeitando os filtros ativos.
+pub async fn fetch_stats(pool: &SqlitePool, filters: &Filters) -> Result<Stats> {
+    let (conditions, city, keyword, days) = filter_parts(filters);
+
+    let sql = format!(
+        r#"
+        SELECT COUNT(DISTINCT g.id)           AS gazettes,
+               COUNT(a.id)                    AS alerts,
+               COUNT(DISTINCT g.territory_name) AS cities
+        FROM gazettes g
+        JOIN alerts a ON a.gazette_id = g.id
+        WHERE 1 = 1{conditions}
+        "#
+    );
+
+    let mut query = sqlx::query(&sql);
+    if let Some(value) = &city {
+        query = query.bind(value);
+    }
+    if let Some(value) = &keyword {
+        query = query.bind(value);
+    }
+    query = query.bind(days);
+
+    let row = query.fetch_one(pool).await?;
+
+    Ok(Stats {
+        total_gazettes: row.try_get("gazettes")?,
+        total_alerts: row.try_get("alerts")?,
+        total_cities: row.try_get("cities")?,
+    })
+}
+
+/// Cidades que existem no banco, para alimentar o `<select>` do filtro.
+pub async fn fetch_cities(pool: &SqlitePool) -> Result<Vec<String>> {
+    let cities = sqlx::query_scalar(
+        "SELECT DISTINCT territory_name FROM gazettes ORDER BY territory_name COLLATE NOCASE",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(cities)
+}
+
+pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<GazetteRow>> {
+    let (conditions, city, keyword, days) = filter_parts(filters);
 
     let mut sql = String::from(
         r#"
@@ -114,16 +160,7 @@ pub async fn fetch_gazettes(pool: &SqlitePool, filters: &Filters) -> Result<Vec<
         "#,
     );
 
-    if city.is_some() {
-        sql.push_str(" AND g.territory_name LIKE '%' || ? || '%'");
-    }
-    if keyword.is_some() {
-        sql.push_str(" AND a.keyword LIKE '%' || ? || '%'");
-    }
-
-    // `-3 hours`: o banco guarda datas de Brasilia; `date('now')` e UTC e
-    // viraria o dia as 21h, encolhendo a janela em um dia.
-    sql.push_str(" AND g.published_at >= date('now', '-3 hours', '-' || ? || ' days')");
+    sql.push_str(&conditions);
     sql.push_str(" GROUP BY g.id ORDER BY g.published_at DESC LIMIT 1000");
 
     let mut query = sqlx::query(&sql);
@@ -305,10 +342,11 @@ async fn handler_index(
     State(state): State<AppState>,
     Query(filters): Query<Filters>,
 ) -> std::result::Result<Html<String>, AppError> {
-    let (stats, gazettes, last_update) = tokio::join!(
-        fetch_stats(&state.pool),
+    let (stats, gazettes, last_update, cities) = tokio::join!(
+        fetch_stats(&state.pool, &filters),
         fetch_gazettes(&state.pool, &filters),
         fetch_last_update(&state.pool),
+        fetch_cities(&state.pool),
     );
 
     let view = FilterView {
@@ -320,6 +358,7 @@ async fn handler_index(
     let context = minijinja::context! {
         stats => stats?,
         gazettes => gazettes?,
+        cities => cities?,
         filters => view,
         rss_mb => format!("{:.1}", state.rss_mb),
         last_update => last_update?,
@@ -504,7 +543,7 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_stats_empty() {
         let pool = test_pool().await;
-        let stats = fetch_stats(&pool).await.unwrap();
+        let stats = fetch_stats(&pool, &Filters::default()).await.unwrap();
         assert_eq!(stats.total_gazettes, 0);
         assert_eq!(stats.total_alerts, 0);
         assert_eq!(stats.total_cities, 0);
@@ -613,6 +652,51 @@ mod tests {
         let out = excerpt_for(&text, &["licitacao".to_string()], EXCERPT_RADIUS);
         assert_eq!(out.chars().count(), 200);
         assert_eq!(out, "z".repeat(200));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_stats_respeitam_o_filtro() {
+        let pool = test_pool().await;
+        add_gazette(&pool, "g1", "Curitiba", 1, "pregao eletronico").await;
+        add_gazette(&pool, "g2", "Salvador", 1, "contrato").await;
+        add_alert(&pool, "g1", "+pregao +eletronico").await;
+        add_alert(&pool, "g2", "+dispensa +licitacao").await;
+
+        let all = fetch_stats(&pool, &Filters::default()).await.unwrap();
+        assert_eq!(all.total_gazettes, 2);
+        assert_eq!(all.total_alerts, 2);
+        assert_eq!(all.total_cities, 2);
+
+        // Os cards precisam acompanhar o filtro, senao contradizem a lista.
+        let by_city = Filters {
+            city: Some("curit".into()),
+            ..Filters::default()
+        };
+        let stats = fetch_stats(&pool, &by_city).await.unwrap();
+        assert_eq!(stats.total_gazettes, 1);
+        assert_eq!(stats.total_alerts, 1);
+        assert_eq!(stats.total_cities, 1);
+
+        let by_keyword = Filters {
+            keyword: Some("dispensa".into()),
+            ..Filters::default()
+        };
+        let stats = fetch_stats(&pool, &by_keyword).await.unwrap();
+        assert_eq!(stats.total_alerts, 1);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_cities_ordenadas_e_sem_repeticao() {
+        let pool = test_pool().await;
+        add_gazette(&pool, "g1", "Salvador", 1, "a").await;
+        add_gazette(&pool, "g2", "Curitiba", 1, "b").await;
+        add_gazette(&pool, "g3", "Curitiba", 2, "c").await;
+        add_alert(&pool, "g1", "licitacao").await;
+        add_alert(&pool, "g2", "licitacao").await;
+        add_alert(&pool, "g3", "licitacao").await;
+
+        let cities = fetch_cities(&pool).await.unwrap();
+        assert_eq!(cities, vec!["Curitiba", "Salvador"]);
     }
 
     #[tokio::test]
