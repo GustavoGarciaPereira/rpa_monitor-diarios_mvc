@@ -300,7 +300,7 @@ fn gazettes_from_body(body: &str, processo: &ProcessoMonitorado) -> Result<Vec<R
     movimentos.sort_by(|a, b| a.data_hora.cmp(&b.data_hora));
 
     let territorio = format!("{}:{}", source.tribunal, source.grau);
-    let apelido = processo.apelido.trim().to_string();
+    let apelido = processo.apelido.as_deref().unwrap_or("").trim().to_string();
     let nome = if apelido.is_empty() {
         processo.numero.clone()
     } else {
@@ -411,7 +411,7 @@ mod tests {
         ProcessoMonitorado {
             numero: "10047296420238260481".to_string(),
             tribunal: "tjsp".to_string(),
-            apelido: "Caso Epitácio".to_string(),
+            apelido: Some("Caso Epitácio".to_string()),
         }
     }
 

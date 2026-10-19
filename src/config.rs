@@ -11,9 +11,9 @@ pub struct ProcessoMonitorado {
     pub numero: String,
     /// Tribunal em minusculo (`tjsp`, `tjrj`, `tjrs`, `trf4`, `stj`).
     pub tribunal: String,
-    /// Nome curto para a UI; vazio usa o numero.
+    /// Nome curto para a UI; ausente usa o numero.
     #[serde(default)]
-    pub apelido: String,
+    pub apelido: Option<String>,
 }
 
 /// Configuracao do monitor.
@@ -201,12 +201,54 @@ impl Config {
         if let Ok(v) = std::env::var("MONITOR_FAMURS_ENTITIES") {
             self.famurs_entities = split_list(&v);
         }
+        // Aceita os dois nomes; o prefixado com MONITOR_ tem precedencia.
         if let Ok(v) = std::env::var("DATAJUD_API_KEY") {
             if !v.trim().is_empty() {
                 self.datajud_api_key = v;
             }
         }
+        if let Ok(v) = std::env::var("MONITOR_DATAJUD_API_KEY") {
+            if !v.trim().is_empty() {
+                self.datajud_api_key = v;
+            }
+        }
+        if let Ok(v) = std::env::var("MONITOR_PROCESSOS") {
+            self.processos = parse_processos_env(&v);
+        }
     }
+}
+
+/// Le a lista de processos da env.
+///
+/// Formato: `tribunal:numero[:apelido]`, separado por virgula.
+/// `"stj:00011552020248272734:REsp exemplo,tjsp:10047296420238260481"`.
+///
+/// Entradas invalidas sao ignoradas em vez de derrubar o processo inteiro:
+/// uma virgula sobrando nao pode impedir o monitor de subir.
+fn parse_processos_env(raw: &str) -> Vec<ProcessoMonitorado> {
+    raw.split(',')
+        .filter_map(|entry| {
+            let parts: Vec<&str> = entry.splitn(3, ':').collect();
+            if parts.len() < 2 {
+                return None;
+            }
+
+            let tribunal = parts[0].trim().to_lowercase();
+            let numero = parts[1].trim().to_string();
+            if tribunal.is_empty() || numero.is_empty() {
+                return None;
+            }
+
+            Some(ProcessoMonitorado {
+                tribunal,
+                numero,
+                apelido: parts
+                    .get(2)
+                    .map(|apelido| apelido.trim().to_string())
+                    .filter(|apelido| !apelido.is_empty()),
+            })
+        })
+        .collect()
 }
 
 fn split_list(raw: &str) -> Vec<String> {
@@ -263,6 +305,39 @@ territories = ["355030"]
         .unwrap();
         let err = cfg.validate_for_scan().unwrap_err().to_string();
         assert!(err.contains("territory_id invalido"), "erro foi: {err}");
+    }
+
+    #[test]
+    fn test_parse_processos_env_uma_entrada() {
+        let processos = parse_processos_env("stj:123:apelido");
+        assert_eq!(processos.len(), 1);
+        assert_eq!(processos[0].tribunal, "stj");
+        assert_eq!(processos[0].numero, "123");
+        assert_eq!(processos[0].apelido.as_deref(), Some("apelido"));
+    }
+
+    #[test]
+    fn test_parse_processos_env_varios() {
+        let processos = parse_processos_env("stj:111:a,tjsp:222:b");
+        assert_eq!(processos.len(), 2);
+        assert_eq!(processos[0].numero, "111");
+        assert_eq!(processos[1].tribunal, "tjsp");
+        assert_eq!(processos[1].numero, "222");
+    }
+
+    #[test]
+    fn test_parse_processos_env_apelido_opcional() {
+        let processos = parse_processos_env("stj:123");
+        assert_eq!(processos.len(), 1);
+        assert!(processos[0].apelido.is_none());
+    }
+
+    #[test]
+    fn test_parse_processos_env_vazio() {
+        assert!(parse_processos_env("").is_empty());
+        // Entradas invalidas sao ignoradas, nao derrubam o resto.
+        assert!(parse_processos_env(",,").is_empty());
+        assert_eq!(parse_processos_env("lixo,stj:1").len(), 1);
     }
 
     #[test]

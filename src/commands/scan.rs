@@ -313,7 +313,7 @@ mod tests {
             processos: vec![ProcessoMonitorado {
                 numero: "00011552020248272734".to_string(),
                 tribunal: "stj".to_string(),
-                apelido: "x".to_string(),
+                apelido: Some("x".to_string()),
             }],
             ..config_base()
         };

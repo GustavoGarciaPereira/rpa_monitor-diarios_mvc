@@ -8,10 +8,13 @@ primary_region = 'gru'
 
 [build]
 [env]
-  MONITOR_KEYWORDS = '+pregao +eletronico,+dispensa +licitacao'
-  MONITOR_TERRITORIES = '4106902,3304557,2927408,2611606,4316907,4319604'
   RUST_LOG = 'info,monitor_diarios=info'
+  MONITOR_KEYWORDS = '+pregao +eletronico,+dispensa +licitacao'
+  MONITOR_TERRITORIES = '4106902,3304557,2927408,2611606'
   MONITOR_FAMURS_ENTITIES = '64462'
+  MONITOR_DATAJUD_API_KEY = 'APIKey cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw=='
+  MONITOR_PROCESSOS = 'stj:00011552020248272734:REsp exemplo'
+
 
 
 [[mounts]]
